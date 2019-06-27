@@ -32,7 +32,7 @@ namespace ZKEACMS.TemplateImporter.Service
         private static Regex jQueryFilter = new Regex(@"^jquery(\d+|\.|-|_)*(.min)?.js$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
         private static Regex BootstrapFilter = new Regex(@"^bootstrap(\d+|\.|-|_)*(.min)?.(js)$|(css)$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
         private static Regex StyleUrl = new Regex(@"url\(['|""]?([A-Za-z0-9_|\.|/|-]*)['|""]?\)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
-   
+
         private const string ThemeFolder = "themes";
         public TemplateImporterService(IHostingEnvironment hostingEnvironment,
             IThemeService themeService,
@@ -65,6 +65,10 @@ namespace ZKEACMS.TemplateImporter.Service
 
                 foreach (ZipArchiveEntry entry in archive.Entries)
                 {
+                    if (entry.FullName.StartsWith("__MACOSX/"))
+                    {
+                        continue;
+                    }
                     if (themeName.IsNotNullAndWhiteSpace() && !entry.FullName.StartsWith(themeName))
                     {
                         new DirectoryInfo(Path.Combine(ThemeBasePath, themeName)).Delete(true);
@@ -89,16 +93,13 @@ namespace ZKEACMS.TemplateImporter.Service
                     if (themeName == null) return null;
 
                     string extractFilePath = Path.Combine(ThemeBasePath, entry.FullName);
-                    if (entry.FullName.EndsWith(".css"))
-                    {
-                        cssFiles.Add(new PositionEntry
-                        {
-                            Entry = entry.FullName.Substring(themeName.Length + 1)
-                        });
-                    }
+
                     if (entry.FullName.EndsWith(".html"))
                     {
-                        entry.Open();
+                        if (entry.FullName.IndexOf('/') != entry.FullName.LastIndexOf('/'))
+                        {
+                            continue;
+                        }
                         HtmlDocument doc = new HtmlDocument();
                         doc.PageName = Path.GetFileName(entry.FullName).Replace(".html", string.Empty);
                         doc.Load(entry.Open());
@@ -113,38 +114,6 @@ namespace ZKEACMS.TemplateImporter.Service
             #endregion
 
             LayoutEntity layout = CreateLayout(themeName);
-
-            #region Sort css 
-            foreach (var document in documents)
-            {
-
-                var links = document.DocumentNode.SelectNodes("//link");
-                for (int i = 0; i < links.Count; i++)
-                {
-                    string href = links[i].GetAttributeValue("href", string.Empty);
-
-                    if (href == string.Empty) continue;
-
-                    if (href.Contains("?"))
-                    {
-                        href = href.Split('?')[0];
-                    }
-                    if (!href.EndsWith(".css")) continue;
-
-                    foreach (var item in cssFiles)
-                    {
-                        if (item.Entry.EndsWith(href))
-                        {
-                            if (item.Position < i)
-                            {
-                                item.Position = i;
-                            }
-                            break;
-                        }
-                    }
-                }
-            }
-            #endregion
 
             #region Create Page
             int index = 1;
@@ -179,6 +148,40 @@ namespace ZKEACMS.TemplateImporter.Service
                     page.DisplayOrder = ++index;
                 }
                 _pageService.Add(page);
+
+                #region Collect css
+                var cssLinks = document.DocumentNode.SelectNodes("//link[@rel='stylesheet']");
+                if (cssLinks != null)
+                {
+                    for (int i = 0; i < cssLinks.Count; i++)
+                    {
+                        string href = cssLinks[i].GetAttributeValue("href", string.Empty);
+
+                        if (href == string.Empty) continue;
+                        if (!isOutSidePath(href))
+                        {
+                            href = ConvertToThemePath(themeName, href);
+                        }
+                        if (!cssFiles.Any(m => m.Entry == href))
+                        {
+                            foreach (var item in cssFiles)
+                            {
+                                if (item.Position >= i)
+                                {
+                                    item.Position++;
+                                }
+                            }
+                            cssFiles.Add(new PositionEntry
+                            {
+                                Entry = href,
+                                Position = i
+                            });
+                        }
+
+                    }
+                }
+
+                #endregion
 
                 #region Collect Scripts
                 var scripts = document.DocumentNode.SelectNodes("//script");
@@ -355,6 +358,7 @@ namespace ZKEACMS.TemplateImporter.Service
                     {
                         writer.WriteLine("@import url(\"/lib/bootstrap/dist/css/bootstrap.min.css\");");
                     }
+                    writer.WriteLine("@import url(\"/css/theme-base.css\");");
                     foreach (var item in cssFiles.OrderBy(m => m.Position))
                     {
                         writer.WriteLine("@import url(\"{0}\");", item.Entry);
@@ -365,6 +369,11 @@ namespace ZKEACMS.TemplateImporter.Service
             {
                 using (StreamWriter writer = new StreamWriter(themeFilestram))
                 {
+                    if (cssFiles.All(css => !BootstrapFilter.IsMatch(css.Entry)))
+                    {
+                        writer.WriteLine("@import url(\"/lib/bootstrap/dist/css/bootstrap.min.css\");");
+                    }
+                    writer.WriteLine("@import url(\"/css/theme-base.css\");");
                     foreach (var item in cssFiles.OrderBy(m => m.Position))
                     {
                         writer.WriteLine("@import url(\"{0}\");", item.Entry);
